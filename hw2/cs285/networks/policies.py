@@ -59,7 +59,15 @@ class MLPPolicy(nn.Module):
     def get_action(self, obs: np.ndarray) -> np.ndarray:
         """Takes a single observation (as a numpy array) and returns a single action (as a numpy array)."""
         # TODO: implement get_action
-        action = None
+        obs_tensor = ptu.from_numpy(obs)
+        # Add batch dimension if needed
+        if obs_tensor.ndim == 1:
+            obs_tensor = obs_tensor.unsqueeze(0)
+        
+        action = self.forward(obs_tensor)
+        action = ptu.to_numpy(action)
+        if action.shape[0] == 1:
+            action = action[0]
 
         return action
 
@@ -71,11 +79,14 @@ class MLPPolicy(nn.Module):
         """
         if self.discrete:
             # TODO: define the forward pass for a policy with a discrete action space.
-            pass
+            logits = self.logits_net(obs)
+            return distributions.Categorical(logits=logits).sample()
         else:
             # TODO: define the forward pass for a policy with a continuous action space.
-            pass
-        return None
+            mean = self.mean_net(obs)
+            std = torch.exp(self.logstd)
+            std = std.unsqueeze(0).expand_as(mean)
+            return distributions.Normal(mean, std).sample()
 
     def update(self, obs: np.ndarray, actions: np.ndarray, *args, **kwargs) -> dict:
         """Performs one iteration of gradient descent on the provided batch of data."""
@@ -97,8 +108,24 @@ class MLPPolicyPG(MLPPolicy):
         advantages = ptu.from_numpy(advantages)
 
         # TODO: implement the policy gradient actor update.
-        loss = None
-
+        if self.discrete:
+            logits = self.logits_net(obs)
+            action_dist = distributions.Categorical(logits=logits)
+        else:
+            mean = self.mean_net(obs)
+            std = torch.exp(self.logstd)
+            std = std.unsqueeze(0).expand_as(mean)
+            action_dist = distributions.Normal(mean, std)
+        
+        log_probs = action_dist.log_prob(actions)
+        if not self.discrete:
+            log_probs = log_probs.sum(dim=-1)
+        loss = -torch.mean(advantages * log_probs)
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
         return {
-            "Actor Loss": ptu.to_numpy(loss),
+            "Actor Loss": ptu.to_numpy(loss).item(),
         }
